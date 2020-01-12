@@ -4,6 +4,7 @@ Prometheus style "smokeping" prober.
 ![Example Graph](example-graph.png)
 
 ## Overview
+Note: this is a fork which includes a Prometheus Summary (as well as the Prometheus histogram from the original https://github.com/SuperQ/smokeping_prober)
 
 This prober sends a series of ICMP (or UDP) pings to a target and records the responses in Prometheus histogram metrics.
 
@@ -35,7 +36,7 @@ Args:
 Requires Go >= 1.11
 
 ```console
-go get github.com/superq/smokeping_prober
+go get github.com/ConradWood/smokeping_prober
 sudo setcap cap_net_raw=+ep ${GOPATH}/bin/smokeping_prober
 ```
 
