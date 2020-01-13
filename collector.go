@@ -16,6 +16,8 @@ package main
 
 import (
 	"github.com/sparrc/go-ping"
+	"strconv"
+	"strings"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/log"
@@ -28,14 +30,6 @@ const (
 var (
 	labelNames = []string{"ip", "host"}
 
-	pingResponseTtl = prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Namespace: namespace,
-			Name:      "response_ttl",
-			Help:      "The last response Time To Live (TTL).",
-		},
-		labelNames,
-	)
 	summary = prometheus.NewSummaryVec(prometheus.SummaryOpts{
 		Name:       "smokeping_response_latency_summary",
 		Help:       "Summary for ping response latencies",
@@ -43,74 +37,61 @@ var (
 	},
 		labelNames,
 	)
+	packetsTx = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "smokeping_packets_sent",
+		Help: "counter of all packets being sent out",
+	},
+		labelNames,
+	)
+	packetsRx = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "smokeping_packets_received",
+		Help: "counter of all responses received (ignoring dups)",
+	},
+		labelNames,
+	)
+	histo *prometheus.HistogramVec
 )
 
 func init() {
-	prometheus.MustRegister(pingResponseTtl, summary)
+	prometheus.MustRegister(summary, packetsTx, packetsRx)
 }
 
-func newPingResponseHistogram(buckets []float64) *prometheus.HistogramVec {
-	return prometheus.NewHistogramVec(
+func newHisto(buckets string) {
+	bucketstrings := strings.Split(buckets, ",")
+	bucketlist := make([]float64, len(bucketstrings))
+	for i := range bucketstrings {
+		value, err := strconv.ParseFloat(bucketstrings[i], 64)
+		if err != nil {
+			log.Fatalf("invalid float in bucket: %s", err)
+		}
+		bucketlist[i] = value
+	}
+
+	histo = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Namespace: namespace,
 			Name:      "response_duration_seconds",
 			Help:      "A histogram of latencies for ping responses.",
-			Buckets:   buckets,
+			Buckets:   bucketlist,
 		},
 		labelNames,
 	)
+	prometheus.MustRegister(histo)
+}
+func (pe *pingEntry) Run() {
+	pe.pinger.Run()
 }
 
-// SmokepingCollector collects metrics from the pinger.
-type SmokepingCollector struct {
-	pingers *[]*ping.Pinger
-
-	requestsSent *prometheus.Desc
+func (pe *pingEntry) OnRecv(pkt *ping.Packet) {
+	summary.WithLabelValues(pkt.IPAddr.String(), pkt.Addr).Observe(pkt.Rtt.Seconds())
+	histo.WithLabelValues(pkt.IPAddr.String(), pkt.Addr).Observe(pkt.Rtt.Seconds())
+	log.Debugf("%d bytes from %s: icmp_seq=%d time=%v ttl=%v\n",
+		pkt.Nbytes, pkt.IPAddr, pkt.Seq, pkt.Rtt, pkt.Ttl)
 }
-
-func NewSmokepingCollector(pingers *[]*ping.Pinger, pingResponseSeconds prometheus.HistogramVec) *SmokepingCollector {
-	for _, pinger := range *pingers {
-		pinger.OnRecv = func(pkt *ping.Packet) {
-			summary.WithLabelValues(pkt.IPAddr.String(), pkt.Addr).Observe(pkt.Rtt.Seconds())
-			pingResponseSeconds.WithLabelValues(pkt.IPAddr.String(), pkt.Addr).Observe(pkt.Rtt.Seconds())
-			pingResponseTtl.WithLabelValues(pkt.IPAddr.String(), pkt.Addr).Set(float64(pkt.Ttl))
-			log.Debugf("%d bytes from %s: icmp_seq=%d time=%v ttl=%v\n",
-				pkt.Nbytes, pkt.IPAddr, pkt.Seq, pkt.Rtt, pkt.Ttl)
-		}
-		pinger.OnFinish = func(stats *ping.Statistics) {
-			log.Debugf("\n--- %s ping statistics ---\n", stats.Addr)
-			log.Debugf("%d packets transmitted, %d packets received, %v%% packet loss\n",
-				stats.PacketsSent, stats.PacketsRecv, stats.PacketLoss)
-			log.Debugf("round-trip min/avg/max/stddev = %v/%v/%v/%v\n",
-				stats.MinRtt, stats.AvgRtt, stats.MaxRtt, stats.StdDevRtt)
-		}
-	}
-
-	return &SmokepingCollector{
-		pingers: pingers,
-		requestsSent: prometheus.NewDesc(
-			prometheus.BuildFQName(namespace, "", "requests_total"),
-			"Number of ping requests sent",
-			labelNames,
-			nil,
-		),
-	}
-}
-
-func (s *SmokepingCollector) Describe(ch chan<- *prometheus.Desc) {
-	ch <- s.requestsSent
-}
-
-func (s *SmokepingCollector) Collect(ch chan<- prometheus.Metric) {
-	for _, pinger := range *s.pingers {
-		stats := pinger.Statistics()
-
-		ch <- prometheus.MustNewConstMetric(
-			s.requestsSent,
-			prometheus.CounterValue,
-			float64(stats.PacketsSent),
-			stats.IPAddr.String(),
-			stats.Addr,
-		)
-	}
+func (pe *pingEntry) OnFinish(stats *ping.Statistics) {
+	log.Debugf("\n--- %s ping statistics ---\n", stats.Addr)
+	log.Debugf("%d packets transmitted, %d packets received, %v%% packet loss\n",
+		stats.PacketsSent, stats.PacketsRecv, stats.PacketLoss)
+	log.Debugf("round-trip min/avg/max/stddev = %v/%v/%v/%v\n",
+		stats.MinRtt, stats.AvgRtt, stats.MaxRtt, stats.StdDevRtt)
 }
