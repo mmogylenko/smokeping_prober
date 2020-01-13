@@ -44,8 +44,9 @@ var (
 )
 
 type pingEntry struct {
-	hostname string
-	pinger   *ping.Pinger
+	hostname  string
+	lastReset time.Time
+	pinger    *ping.Pinger
 }
 type hostList []string
 
@@ -130,6 +131,7 @@ func pingerThread() {
 			fmt.Printf("Host: %s, IP=%s, sent=%d, received: %d\n", p.hostname, p.pinger.IPAddr(), p.pinger.PacketsSent, p.pinger.PacketsRecv)
 			packetsTx.WithLabelValues(p.pinger.IPAddr().String(), p.hostname).Set(float64(p.pinger.PacketsSent))
 			packetsRx.WithLabelValues(p.pinger.IPAddr().String(), p.hostname).Set(float64(p.pinger.PacketsRecv))
+			p.ResetIfDue()
 		}
 		time.Sleep(*interval)
 	}

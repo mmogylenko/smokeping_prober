@@ -15,12 +15,12 @@
 package main
 
 import (
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/common/log"
 	"github.com/sparrc/go-ping"
 	"strconv"
 	"strings"
-
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/common/log"
+	"time"
 )
 
 const (
@@ -94,4 +94,13 @@ func (pe *pingEntry) OnFinish(stats *ping.Statistics) {
 		stats.PacketsSent, stats.PacketsRecv, stats.PacketLoss)
 	log.Debugf("round-trip min/avg/max/stddev = %v/%v/%v/%v\n",
 		stats.MinRtt, stats.AvgRtt, stats.MaxRtt, stats.StdDevRtt)
+}
+
+// ocassionally reset the counters, because otherwise, if we lost a packet we will _never_ reach 100% packet received status
+func (pe *pingEntry) ResetIfDue() {
+	if time.Since(pe.lastReset) > (time.Duration(5) * time.Minute) {
+		pe.pinger.PacketsSent = 0
+		pe.pinger.PacketsRecv = 0
+		pe.lastReset = time.Now()
+	}
 }
