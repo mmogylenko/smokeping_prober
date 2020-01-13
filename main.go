@@ -44,6 +44,7 @@ var (
 )
 
 type pingEntry struct {
+	received  bool
 	hostname  string
 	lastReset time.Time
 	pinger    *ping.Pinger

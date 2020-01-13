@@ -87,6 +87,7 @@ func (pe *pingEntry) OnRecv(pkt *ping.Packet) {
 	histo.WithLabelValues(pkt.IPAddr.String(), pkt.Addr).Observe(pkt.Rtt.Seconds())
 	log.Debugf("%d bytes from %s: icmp_seq=%d time=%v ttl=%v\n",
 		pkt.Nbytes, pkt.IPAddr, pkt.Seq, pkt.Rtt, pkt.Ttl)
+	pe.received = true
 }
 func (pe *pingEntry) OnFinish(stats *ping.Statistics) {
 	log.Debugf("\n--- %s ping statistics ---\n", stats.Addr)
@@ -97,10 +98,12 @@ func (pe *pingEntry) OnFinish(stats *ping.Statistics) {
 }
 
 // ocassionally reset the counters, because otherwise, if we lost a packet we will _never_ reach 100% packet received status
+// only reset if we got at least one packet since last reset
 func (pe *pingEntry) ResetIfDue() {
-	if time.Since(pe.lastReset) > (time.Duration(5) * time.Minute) {
+	if pe.received && time.Since(pe.lastReset) > (time.Duration(5)*time.Minute) {
 		pe.pinger.PacketsSent = 0
 		pe.pinger.PacketsRecv = 0
 		pe.lastReset = time.Now()
+		pe.received = false
 	}
 }
