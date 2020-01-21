@@ -15,32 +15,27 @@
 package main
 
 import (
+	"flag"
 	"fmt"
-	"net/http"
-	_ "net/http/pprof"
-	"time"
-
-	"github.com/sparrc/go-ping"
-
-	"github.com/prometheus/client_golang/prometheus"
+	//	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/prometheus/common/log"
-	"github.com/prometheus/common/version"
-	"gopkg.in/alecthomas/kingpin.v2"
+	"github.com/sparrc/go-ping"
+	"net/http"
+	"time"
 )
 
 var (
-	pingers       []*pingEntry
-	listenAddress = kingpin.Flag("web.listen-address", "Address on which to expose metrics and web interface.").Default(":9374").String()
-	metricsPath   = kingpin.Flag("web.telemetry-path", "Path under which to expose metrics.").Default("/metrics").String()
+	debug         = flag.Bool("debug", false, "debug mode")
+	listenAddress = flag.String("web.listen-address", ":9374", "Address on which to expose metrics and web interface.")
+	metricsPath   = flag.String("web.telemetry-path", "/metrics", "Path under which to expose metrics.")
 
-	buckets    = kingpin.Flag("buckets", "A comma delimited list of buckets to use").Default(defaultBuckets).String()
-	privileged = kingpin.Flag("privileged", "Run in privileged ICMP mode").Default("true").Bool()
-	hosts      = HostList(kingpin.Arg("hosts", "List of hosts to ping").Required())
+	buckets    = flag.String("buckets", defaultBuckets, "A comma delimited list of buckets to use")
+	privileged = flag.Bool("privileged", true, "Run in privileged ICMP mode")
 
 	// Generated with: prometheus.ExponentialBuckets(0.00005, 2, 20)
 	defaultBuckets = "5e-05,0.0001,0.0002,0.0004,0.0008,0.0016,0.0032,0.0064,0.0128,0.0256,0.0512,0.1024,0.2048,0.4096,0.8192,1.6384,3.2768,6.5536,13.1072,26.2144"
-	interval       = kingpin.Flag("ping.interval", "Ping interval duration").Short('i').Default("1s").Duration()
+	interval       = flag.Int("ping.interval", 1, "Ping interval seconds")
+	timeout        = flag.Int("ping.timeout", 1, "ping timeout")
 )
 
 type pingEntry struct {
@@ -49,65 +44,14 @@ type pingEntry struct {
 	lastReset time.Time
 	pinger    *ping.Pinger
 }
-type hostList []string
-
-func (h *hostList) Set(value string) error {
-	if value == "" {
-		return fmt.Errorf("'%s' is not valid hostname", value)
-	} else {
-		*h = append(*h, value)
-		return nil
-	}
-}
-
-func (h *hostList) String() string {
-	return ""
-}
-
-func (h *hostList) IsCumulative() bool {
-	return true
-}
-
-func HostList(s kingpin.Settings) (target *[]string) {
-	target = new([]string)
-	s.SetValue((*hostList)(target))
-	return
-}
-
-func init() {
-	prometheus.MustRegister(version.NewCollector("smokeping_prober"))
-}
 
 func main() {
-	log.AddFlags(kingpin.CommandLine)
-	kingpin.Version(version.Print("smokeping_prober"))
-	kingpin.HelpFlag.Short('h')
-	kingpin.Parse()
-
-	log.Infoln("Starting smokeping_prober", version.Info())
-	log.Infoln("Build context", version.BuildContext())
-	newHisto(defaultBuckets)
-	pingers = make([]*pingEntry, len(*hosts))
-	for i, host := range *hosts {
-		pinger, err := ping.NewPinger(host)
-		if err != nil {
-			log.Errorf("failed to create pinger: %s\n", err.Error())
-			return
-		}
-		pe := &pingEntry{pinger: pinger, hostname: host}
-		//		pinger.Interval = *interval
-		//		pinger.Count = 0
-		//		pinger.Timeout = *timeout
-		pinger.Interval = *interval
-		pinger.SetPrivileged(*privileged)
-		pinger.OnRecv = pe.OnRecv
-		pinger.OnFinish = pe.OnFinish
-		log.Infof("Starting prober for %s", host)
-		pingers[i] = pe
-		go pe.Run()
+	flag.Parse()
+	newHisto(*buckets)
+	hosts := flag.Args()
+	for _, h := range hosts {
+		go pingThread(h)
 	}
-
-	go pingerThread()
 
 	http.Handle(*metricsPath, promhttp.Handler())
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -119,21 +63,48 @@ func main() {
 			</body>
 			</html>`))
 	})
-	log.Infof("Listening on %s", *listenAddress)
-	log.Fatal(http.ListenAndServe(*listenAddress, nil))
-	for _, pinger := range pingers {
-		pinger.pinger.Stop()
+
+	fmt.Printf("Listening on %s\n", *listenAddress)
+	err := http.ListenAndServe(*listenAddress, nil)
+	if err != nil {
+		fmt.Printf("Failed to start listener on %s: %s\n", *listenAddress, err)
+	}
+}
+func pingThread(host string) {
+	for {
+		if *debug {
+			fmt.Printf("Starting pinger for %s...\n", host)
+		}
+		pinger, err := ping.NewPinger(host)
+		if err != nil {
+			fmt.Printf("failed to create pinger: %s\n", err.Error())
+			return
+		}
+		pe := &pingEntry{pinger: pinger, hostname: host}
+		//		pinger.Interval = *interval
+		pinger.Count = 1
+		pinger.Timeout = time.Duration(*timeout) * time.Second
+		pinger.Interval = time.Duration(*interval) * time.Second
+		pinger.SetPrivileged(*privileged)
+		pinger.OnRecv = pe.OnRecv
+		pinger.OnFinish = pe.OnFinish
+		pe.Ping()
+		// technically we sleep for "interval+ping_duration", but that's ok. either it's a few ms or timeout
+		// so this is seems about right
+		time.Sleep(time.Duration(*interval) * time.Second)
 	}
 }
 
 func pingerThread() {
-	for {
-		for _, p := range pingers {
-			fmt.Printf("Host: %s, IP=%s, sent=%d, received: %d\n", p.hostname, p.pinger.IPAddr(), p.pinger.PacketsSent, p.pinger.PacketsRecv)
-			packetsTx.WithLabelValues(p.pinger.IPAddr().String(), p.hostname).Set(float64(p.pinger.PacketsSent))
-			packetsRx.WithLabelValues(p.pinger.IPAddr().String(), p.hostname).Set(float64(p.pinger.PacketsRecv))
-			p.ResetIfDue()
+	/*
+		for {
+			for _, p := range pingers {
+				fmt.Printf("Host: %s, IP=%s, sent=%d, received: %d\n", p.hostname, p.pinger.IPAddr(), p.pinger.PacketsSent, p.pinger.PacketsRecv)
+				packetsTx.WithLabelValues(p.pinger.IPAddr().String(), p.hostname).Set(float64(p.pinger.PacketsSent))
+				packetsRx.WithLabelValues(p.pinger.IPAddr().String(), p.hostname).Set(float64(p.pinger.PacketsRecv))
+				p.ResetIfDue()
+			}
+			time.Sleep(*interval)
 		}
-		time.Sleep(*interval)
-	}
+	*/
 }

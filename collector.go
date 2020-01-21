@@ -15,12 +15,12 @@
 package main
 
 import (
+	"fmt"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/common/log"
 	"github.com/sparrc/go-ping"
+	"os"
 	"strconv"
 	"strings"
-	"time"
 )
 
 const (
@@ -28,7 +28,7 @@ const (
 )
 
 var (
-	labelNames = []string{"ip", "host"}
+	labelNames = []string{"host", "ip"}
 
 	summary = prometheus.NewSummaryVec(prometheus.SummaryOpts{
 		Name:       "smokeping_response_latency_summary",
@@ -37,13 +37,13 @@ var (
 	},
 		labelNames,
 	)
-	packetsTx = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+	packetsTx = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "smokeping_packets_sent",
 		Help: "counter of all packets being sent out",
 	},
 		labelNames,
 	)
-	packetsRx = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+	packetsRx = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "smokeping_packets_received",
 		Help: "counter of all responses received (ignoring dups)",
 	},
@@ -62,7 +62,8 @@ func newHisto(buckets string) {
 	for i := range bucketstrings {
 		value, err := strconv.ParseFloat(bucketstrings[i], 64)
 		if err != nil {
-			log.Fatalf("invalid float in bucket: %s", err)
+			fmt.Printf("invalid float in bucket: %s", err)
+			os.Exit(10)
 		}
 		bucketlist[i] = value
 	}
@@ -78,32 +79,30 @@ func newHisto(buckets string) {
 	)
 	prometheus.MustRegister(histo)
 }
-func (pe *pingEntry) Run() {
+func (pe *pingEntry) Ping() {
+	packetsTx.WithLabelValues(pe.Hostname(), pe.Address()).Inc()
 	pe.pinger.Run()
+}
+func (pe *pingEntry) Hostname() string {
+	return pe.pinger.Addr()
+
+}
+func (pe *pingEntry) Address() string {
+	return pe.pinger.IPAddr().String()
 }
 
 func (pe *pingEntry) OnRecv(pkt *ping.Packet) {
-	summary.WithLabelValues(pkt.IPAddr.String(), pkt.Addr).Observe(pkt.Rtt.Seconds())
-	histo.WithLabelValues(pkt.IPAddr.String(), pkt.Addr).Observe(pkt.Rtt.Seconds())
-	log.Debugf("%d bytes from %s: icmp_seq=%d time=%v ttl=%v\n",
-		pkt.Nbytes, pkt.IPAddr, pkt.Seq, pkt.Rtt, pkt.Ttl)
+	summary.WithLabelValues(pe.Hostname(), pe.Address()).Observe(pkt.Rtt.Seconds())
+	histo.WithLabelValues(pe.Hostname(), pe.Address()).Observe(pkt.Rtt.Seconds())
+	if *debug {
+		fmt.Printf("OnRecv %s: time=%v\n", pe.Hostname(), pkt.Rtt)
+	}
 	pe.received = true
 }
 func (pe *pingEntry) OnFinish(stats *ping.Statistics) {
-	log.Debugf("\n--- %s ping statistics ---\n", stats.Addr)
-	log.Debugf("%d packets transmitted, %d packets received, %v%% packet loss\n",
-		stats.PacketsSent, stats.PacketsRecv, stats.PacketLoss)
-	log.Debugf("round-trip min/avg/max/stddev = %v/%v/%v/%v\n",
-		stats.MinRtt, stats.AvgRtt, stats.MaxRtt, stats.StdDevRtt)
-}
-
-// ocassionally reset the counters, because otherwise, if we lost a packet we will _never_ reach 100% packet received status
-// only reset if we got at least one packet since last reset
-func (pe *pingEntry) ResetIfDue() {
-	if pe.received && time.Since(pe.lastReset) > (time.Duration(5)*time.Minute) {
-		pe.pinger.PacketsSent = 0
-		pe.pinger.PacketsRecv = 0
-		pe.lastReset = time.Now()
-		pe.received = false
+	packetsRx.WithLabelValues(pe.Hostname(), pe.Address()).Add(float64(stats.PacketsRecv))
+	if *debug {
+		fmt.Printf("OnFinish: %d packets transmitted, %d packets received, %v%% packet loss\n", stats.PacketsSent, stats.PacketsRecv, stats.PacketLoss)
+		fmt.Printf("OnFinish: round-trip min/avg/max/stddev = %v/%v/%v/%v\n", stats.MinRtt, stats.AvgRtt, stats.MaxRtt, stats.StdDevRtt)
 	}
 }
