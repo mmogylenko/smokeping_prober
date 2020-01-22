@@ -92,6 +92,7 @@ func (pe *pingEntry) Address() string {
 }
 
 func (pe *pingEntry) OnRecv(pkt *ping.Packet) {
+	packetsRx.WithLabelValues(pe.Hostname(), pe.Address()).Inc()
 	summary.WithLabelValues(pe.Hostname(), pe.Address()).Observe(pkt.Rtt.Seconds())
 	histo.WithLabelValues(pe.Hostname(), pe.Address()).Observe(pkt.Rtt.Seconds())
 	if *debug {
@@ -100,7 +101,6 @@ func (pe *pingEntry) OnRecv(pkt *ping.Packet) {
 	pe.received = true
 }
 func (pe *pingEntry) OnFinish(stats *ping.Statistics) {
-	packetsRx.WithLabelValues(pe.Hostname(), pe.Address()).Add(float64(stats.PacketsRecv))
 	if *debug {
 		fmt.Printf("OnFinish: %d packets transmitted, %d packets received, %v%% packet loss\n", stats.PacketsSent, stats.PacketsRecv, stats.PacketLoss)
 		fmt.Printf("OnFinish: round-trip min/avg/max/stddev = %v/%v/%v/%v\n", stats.MinRtt, stats.AvgRtt, stats.MaxRtt, stats.StdDevRtt)
