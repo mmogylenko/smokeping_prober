@@ -30,7 +30,7 @@ var (
 	metricsPath   = flag.String("web.telemetry-path", "/metrics", "Path under which to expose metrics.")
 
 	buckets    = flag.String("buckets", defaultBuckets, "A comma delimited list of buckets to use")
-	privileged = flag.Bool("privileged", true, "Run in privileged ICMP mode")
+	privileged = flag.Bool("privileged", false, "Run in privileged ICMP mode")
 
 	// Generated with: prometheus.ExponentialBuckets(0.00005, 2, 20)
 	defaultBuckets = "5e-05,0.0001,0.0002,0.0004,0.0008,0.0016,0.0032,0.0064,0.0128,0.0256,0.0512,0.1024,0.2048,0.4096,0.8192,1.6384,3.2768,6.5536,13.1072,26.2144"
